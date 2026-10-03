@@ -58,26 +58,37 @@ Xem `harness/middleware.py` để biết thứ tự các hook.
 """
 
 from __future__ import annotations
-
 from harness.middleware import Middleware
 
 
 class CitationChecker(Middleware):
-    """Trỏ mỗi claim về đúng tài liệu thật sự chứa câu đó."""
-
     name = "citation_checker"
 
+    @staticmethod
+    def _matches_line(text: str, body: str) -> bool:
+        for line in body.splitlines():
+            if text == line.strip():
+                return True
+        return False
+
     def after_agent(self, ctx, report):
-        # TODO (§11): khoảng 10-25 dòng.
-        #  1. Lấy report["claims"]; bỏ qua nếu rỗng hoặc ctx.corpus là None.
-        #  2. Với mỗi claim, gọi ctx.corpus.get(claim["doc_id"]).
-        #     Nếu tài liệu tồn tại VÀ claim["text"] khớp NGUYÊN VĂN một
-        #     DÒNG trong body của nó (không phải chỉ "nằm trong body")
-        #     -> trích dẫn đã đúng, giữ nguyên claim.
-        #  3. Nếu không: tìm trong ctx.corpus.docs tài liệu đầu tiên thoả
-        #     doc.body in ctx.observed_text  và  claim["text"] khớp
-        #     nguyên văn một DÒNG của doc.body -> đó là nguồn thật.
-        #     Đổi doc_id sang nó, GIỮ NGUYÊN text.
-        #  4. Không tìm được nguồn nào -> để `critic` xử lý, đừng bịa doc_id.
-        #  5. Cập nhật report["citations"] = danh sách doc_id đã sắp xếp.
-        return report  # <- mặc định KHÔNG LÀM GÌ: agent vẫn chạy được
+        claims = report.get("claims")
+        if not claims or not isinstance(claims, list) or ctx.corpus is None:
+            return report
+
+        for claim in claims:
+            text = claim.get("text", "")
+            if not text:
+                continue
+            doc = ctx.corpus.get(claim.get("doc_id"))
+            if doc is not None and self._matches_line(text, doc.body):
+                continue
+            for cand in ctx.corpus.docs:
+                if cand.body not in ctx.observed_text:
+                    continue
+                if self._matches_line(text, cand.body):
+                    claim["doc_id"] = cand.doc_id
+                    break
+
+        report["citations"] = sorted({c["doc_id"] for c in claims if c.get("doc_id")})
+        return report

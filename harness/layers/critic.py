@@ -69,26 +69,54 @@ Xem `harness/middleware.py` để biết thứ tự các hook.
 """
 
 from __future__ import annotations
-
 from harness.middleware import Middleware
 
 
 class Critic(Middleware):
-    """Xoá những gì bằng chứng không đỡ; abstain khi không còn gì."""
-
     name = "critic"
 
+    def _find_doc_id(self, ctx, text: str):
+        if ctx.corpus is None:
+            return None
+        for doc in ctx.corpus.docs:
+            for line in doc.body.splitlines():
+                if text == line.strip():
+                    return doc.doc_id
+        return None
+
     def after_agent(self, ctx, report):
-        # TODO (§2): khoảng 10-25 dòng.
-        #  1. Lấy report["claims"]; nếu rỗng hoặc không phải list thì thôi.
-        #  2. Với mỗi claim: nếu claim["text"] có trong ctx.observed_text
-        #     -> giữ nguyên (KHÔNG sửa chữ).
-        #  3. Nếu không: thử tách câu ghép (trường hợp (c) ở docstring).
-        #     Tách được -> giữ cả hai nửa, mỗi nửa gắn doc_id của tài liệu
-        #     thật sự chứa nó, và đặt report["abstain"] = True.
-        #  4. Không tách được -> đây là bịa: bỏ claim đi.
-        #  5. Nếu không còn claim nào: report["abstain"] = True,
-        #     claims = [], citations = [], và viết lại "answer" nói rõ là
-        #     không đủ căn cứ.
-        #  6. Cập nhật report["citations"] cho khớp với claims còn lại.
-        return report  # <- mặc định KHÔNG LÀM GÌ: agent vẫn chạy được
+        claims = report.get("claims")
+        if not claims or not isinstance(claims, list):
+            return report
+
+        kept = []
+        for claim in claims:
+            text = claim.get("text", "")
+            if not text:
+                continue
+            if text in ctx.observed_text:
+                kept.append(claim)
+                continue
+            if " và " in text:
+                left, right = text.split(" và ", 1)
+                left, right = left.strip(), right.strip()
+                if left in ctx.observed_text and right in ctx.observed_text:
+                    left_doc = self._find_doc_id(ctx, left)
+                    right_doc = self._find_doc_id(ctx, right)
+                    if left_doc and right_doc and left_doc != right_doc:
+                        kept.append({**claim, "text": left, "doc_id": left_doc})
+                        kept.append({**claim, "text": right, "doc_id": right_doc})
+                        report["abstain"] = True
+                        continue
+
+        report["claims"] = kept
+        if not kept:
+            report["abstain"] = True
+            report["claims"] = []
+            report["citations"] = []
+            report["answer"] = (
+                "Không đủ căn cứ trong tài liệu đã đọc để trả lời câu hỏi này."
+            )
+        else:
+            report["citations"] = sorted({c["doc_id"] for c in kept if c.get("doc_id")})
+        return report
